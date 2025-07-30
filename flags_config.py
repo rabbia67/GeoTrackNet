@@ -1,19 +1,19 @@
 # coding: utf-8
 
 # MIT License
-# 
+#
 # Copyright (c) 2018 Duong Nguyen
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -32,7 +32,7 @@ import os
 import tensorflow as tf
 import pickle
 import math
-
+from types import SimpleNamespace # This is the new import for the config object
 
 ## Bretagne dataset
 # LAT_MIN = 46.5
@@ -70,8 +70,11 @@ tf.app.flags.DEFINE_string("bound", "elbo",
 tf.app.flags.DEFINE_integer("latent_size", 64,
                             "The size of the latent state of the model.")
 
-tf.app.flags.DEFINE_string("log_dir", "./chkpt",
-                           "The directory to keep checkpoints and summaries in.")
+# This is the dedicated flag for the base log directory for GeoTrackNet.
+# It avoids conflict with absl.logging's internal 'log_dir'.
+tf.app.flags.DEFINE_string("base_log_dir", "./chkpt",
+                           "The base directory to keep checkpoints and summaries in for GeoTrackNet.")
+
 
 tf.app.flags.DEFINE_integer("batch_size", 32,
                             "Batch size.")
@@ -85,9 +88,9 @@ tf.app.flags.DEFINE_float("ll_thresh", -17.47,
 # Dataset flags
 tf.app.flags.DEFINE_string("dataset_dir", "./data",
                            "Dataset directory")
-tf.app.flags.DEFINE_string("trainingset_name", "ct_aruba_2019/ct_aruba_2019_train.pkl",
+tf.app.flags.DEFINE_string("trainingset_name", "ct_2017010203_10_20/ct_2017010203_10_20/ct_2017010203_10_20_train.pkl",
                            "Path to load the trainingset from.")
-tf.app.flags.DEFINE_string("testset_name", "ct_aruba_2019/ct_aruba_2019_test.pkl",
+tf.app.flags.DEFINE_string("testset_name", "ct_2017010203_10_20/ct_2017010203_10_20/ct_2017010203_10_20_test.pkl",
                            "Path to load the testset from.")
 tf.app.flags.DEFINE_string("split", "train",
                            "Split to evaluate the model on. Can be 'train', 'valid', or 'test'.")
@@ -168,7 +171,7 @@ tf.app.flags.DEFINE_string('f', '', 'kernel')
 tf.app.flags.DEFINE_integer("data_dim", 0, "Data dimension")
 tf.app.flags.DEFINE_string('log_filename', '', 'Log filename')
 tf.app.flags.DEFINE_string('logdir_name', '', 'Log dir name')
-tf.app.flags.DEFINE_string('logdir', '', 'Log directory')
+
 tf.app.flags.DEFINE_string('trainingset_path', '', 'Training set path')
 tf.app.flags.DEFINE_string('testset_path', '', 'Test set path')
 tf.app.flags.DEFINE_integer("onehot_lat_bins", 0,
@@ -186,20 +189,35 @@ tf.app.flags.DEFINE_integer("n_lon_cells",  0,
 
 
 FLAGS = tf.app.flags.FLAGS
-config = FLAGS
+
+# Create a SimpleNamespace object to hold all configuration properties.
+# This object behaves like FLAGS for attribute access but is a standard Python object,
+# allowing us to add computed properties like 'logdir' without absl.flags' strictness.
+config = SimpleNamespace()
+
+# Copy all defined flags from FLAGS to our new config object
+for flag_name in dir(FLAGS):
+    # Skip internal attributes and the 'f' flag (which is a Jupyter/IPython artifact)
+    if not flag_name.startswith('_') and flag_name != 'f':
+        try:
+            setattr(config, flag_name, getattr(FLAGS, flag_name))
+        except AttributeError:
+            # This catch is mostly for safety; after flags are defined,
+            # getattr should generally work.
+            pass
 
 
 ## CONFIGS
 #===============================================
 
-## FOUR-HOT VECTOR 
+## FOUR-HOT VECTOR
 config.onehot_lat_bins = math.ceil((config.lat_max-config.lat_min)/config.onehot_lat_reso)
 config.onehot_lon_bins = math.ceil((config.lon_max-config.lon_min)/config.onehot_lon_reso)
 config.onehot_sog_bins = math.ceil(SPEED_MAX/config.onehot_sog_reso)
 config.onehot_cog_bins = math.ceil(360/config.onehot_cog_reso)
 
 config.data_dim  = config.onehot_lat_bins + config.onehot_lon_bins\
-                 + config.onehot_sog_bins + config.onehot_cog_bins # error with data_dimension
+                 + config.onehot_sog_bins + config.onehot_cog_bins
 
 ## LOCAL THRESHOLDING
 config.n_lat_cells = math.ceil((config.lat_max-config.lat_min)/config.cell_lat_reso)
@@ -219,17 +237,24 @@ print("Test set: " + config.testset_path)
 
 
 # log
-log_dir = config.bound + "-"\
+log_dir_suffix = config.bound + "-"\
      + os.path.basename(config.trainingset_name)\
      + "-data_dim-" + str(config.data_dim)\
      + "-latent_size-" + str(config.latent_size)\
      + "-batch_size-" + str(config.batch_size)
-config.logdir = os.path.join(config.log_dir,log_dir)
+
+# The final computed log directory path
+# We use config.base_log_dir (our custom flag) here.
+config.logdir = os.path.join(config.base_log_dir, log_dir_suffix)
+
+# Check and create the directory if it doesn't exist
 if not os.path.exists(config.logdir):
     if config.mode == "train":
+        print(f"Creating log directory: {config.logdir}")
         os.makedirs(config.logdir)
     else:
-        raise ValueError(config.logdir + " doesnt exist")
+        # If not in train mode, and the directory doesn't exist, it's an error.
+        raise ValueError(f"Log directory '{config.logdir}' does not exist and mode is not 'train'.")
 
 if config.log_filename == "":
     config.log_filename = os.path.basename(config.logdir)
