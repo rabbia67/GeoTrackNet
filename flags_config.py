@@ -225,9 +225,8 @@ config.n_lon_cells = math.ceil((config.lon_max-config.lon_min)/config.cell_lon_r
 
 
 ## PATH
-if config.mode == "train":
-    config.testset_name = config.trainingset_name
-elif config.testset_name == "":
+if config.testset_name == "":
+    # Only auto-generate test set name if it wasn't explicitly provided
     config.testset_name = config.trainingset_name.replace("_train","_test")
 config.trainingset_path = os.path.join(config.dataset_dir,config.trainingset_name)
 config.testset_path = os.path.join(config.dataset_dir,config.testset_name)

@@ -53,27 +53,31 @@ def create_eval_graph(inputs, targets, lengths, model, config):
     ta_names = ['log_weights_t','sampleds','trues','rnn_states','rnn_latents', 'rnn_outs']
     tas = [tf.TensorArray(tf.float32, max_seq_len, name='%s_ta' % n)
              for n in ta_names]
-
-    log_weights_acc = tf.zeros([num_samples, batch_size], dtype=tf.float32)
-    log_p_hat_acc = tf.zeros([batch_size], dtype=tf.float32)
-    kl_acc = tf.zeros([num_samples * batch_size], dtype=tf.float32)
+    
+    # FIX: Use tf.stack to create the shapes for all tf.zeros calls
+    tf_num_samples = tf.convert_to_tensor(num_samples, dtype=tf.int32)
+    tf_batch_size = tf.convert_to_tensor(batch_size, dtype=tf.int32)
+    
+    log_weights_acc = tf.zeros(tf.stack([tf_num_samples, tf_batch_size]), dtype=tf.float32)
+    log_p_hat_acc = tf.zeros(tf.stack([tf_batch_size]), dtype=tf.float32)
+    kl_acc = tf.zeros(tf.stack([tf_num_samples * tf_batch_size]), dtype=tf.float32)
+    
     if config.bound == "elbo":
         accs = (log_weights_acc, kl_acc)
     elif config.bound == "fivo":
         accs = (log_weights_acc, log_p_hat_acc, kl_acc)
 
-    target_sampled0 = tf.zeros(shape = [batch_size*num_samples, config.data_dim],
+    target_sampled0 = tf.zeros(shape = tf.stack([tf_batch_size * tf_num_samples, tf.cast(config.data_dim, tf.int32)]),
                                dtype = tf.float32)
-    target_true0 = tf.zeros(shape = [batch_size*num_samples, config.data_dim],
-                               dtype = tf.float32)
+    target_true0 = tf.zeros(shape = tf.stack([tf_batch_size * tf_num_samples, tf.cast(config.data_dim, tf.int32)]),
+                           dtype = tf.float32)
+    
     init_targets = (target_sampled0, target_true0)
-
 
     def while_predicate(t, *unused_args):
         return t < max_seq_len
 
     resampling_criterion=bounds.ess_criterion
-
 
     def while_step(t, rnn_state, tas, accs, while_samples):
         """Implements one timestep of IWAE computation."""
