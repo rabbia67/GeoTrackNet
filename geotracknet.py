@@ -315,8 +315,25 @@ else:
         with open(outputs_path, "rb") as f:
             l_dict = pickle.load(f)
 
+        # Helper function to extract lat/lon from sequence
+        def extract_lat_lon_from_seq(seq, onehot_lat_bins, onehot_lon_bins):
+            """Extract start and end lat/lon from sequence data"""
+            if len(seq) == 0:
+                return None, None, None, None
+            
+            # Get first and last positions
+            start_lat = (seq[0, 0] * 0.01) + config.lat_min  # Convert back to degrees
+            start_lon = ((seq[0, 1] - onehot_lat_bins) * 0.01) + config.lon_min
+            
+            end_lat = (seq[-1, 0] * 0.01) + config.lat_min
+            end_lon = ((seq[-1, 1] - onehot_lat_bins) * 0.01) + config.lon_min
+            
+            return start_lat, start_lon, end_lat, end_lon
+
+        l_dict_normal = []
         l_dict_anomaly = []
         n_error = 0
+        
         for D in tqdm(l_dict):
             try:
                 tmp = D["seq"]
@@ -345,17 +362,84 @@ else:
                 if len(contrario_utils.nonzero_segments(v_anomalies)) > 0:
                     D["anomaly_idx"] = v_anomalies
                     l_dict_anomaly.append(D)
+                else:
+                    l_dict_normal.append(D)
             except Exception as e:
                 logger.error(f"Error processing track {D.get('mmsi', 'unknown')}: {str(e)}")
                 n_error += 1
                 continue
 
         logger.info(f"Number of processed tracks: {len(l_dict)}")
+        logger.info(f"Number of normal tracks: {len(l_dict_normal)}")
         logger.info(f"Number of abnormal tracks: {len(l_dict_anomaly)}")
         logger.info(f"Number of errors: {n_error}")
 
-        # Save to disk
+        # Save abnormal tracks to CSV
         n_anomalies = len(l_dict_anomaly)
+        abnormal_csv_filename = os.path.join(save_dir, 
+            f"abnormal_tracks-{train_name_clean}-{test_name_clean.replace('valid', 'test')}-"
+            f"latent_size-{config.latent_size}-step-{step}-eps-{config.contrario_eps}-{n_anomalies}.csv"
+        )
+
+        with open(abnormal_csv_filename, "w", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "MMSI", "Time_start", "Time_end", "Timestamp_start", "Timestamp_end",
+                "Start_Latitude", "Start_Longitude", "End_Latitude", "End_Longitude"
+            ])
+            
+            for D in l_dict_anomaly:
+                start_lat, start_lon, end_lat, end_lon = extract_lat_lon_from_seq(
+                    D["seq"], config.onehot_lat_bins, config.onehot_lon_bins
+                )
+                
+                writer.writerow([
+                    D["mmsi"],
+                    datetime.utcfromtimestamp(D["t_start"]).strftime('%Y-%m-%d %H:%M:%SZ'),
+                    datetime.utcfromtimestamp(D["t_end"]).strftime('%Y-%m-%d %H:%M:%SZ'),
+                    D["t_start"], 
+                    D["t_end"],
+                    f"{start_lat:.6f}" if start_lat is not None else "",
+                    f"{start_lon:.6f}" if start_lon is not None else "",
+                    f"{end_lat:.6f}" if end_lat is not None else "",
+                    f"{end_lon:.6f}" if end_lon is not None else ""
+                ])
+
+        # Save normal tracks to CSV
+        n_normal = len(l_dict_normal)
+        normal_csv_filename = os.path.join(save_dir, 
+            f"normal_tracks-{train_name_clean}-{test_name_clean.replace('valid', 'test')}-"
+            f"latent_size-{config.latent_size}-step-{step}-eps-{config.contrario_eps}-{n_normal}.csv"
+        )
+
+        with open(normal_csv_filename, "w", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "MMSI", "Time_start", "Time_end", "Timestamp_start", "Timestamp_end",
+                "Start_Latitude", "Start_Longitude", "End_Latitude", "End_Longitude"
+            ])
+            
+            for D in l_dict_normal:
+                start_lat, start_lon, end_lat, end_lon = extract_lat_lon_from_seq(
+                    D["seq"], config.onehot_lat_bins, config.onehot_lon_bins
+                )
+                
+                writer.writerow([
+                    D["mmsi"],
+                    datetime.utcfromtimestamp(D["t_start"]).strftime('%Y-%m-%d %H:%M:%SZ'),
+                    datetime.utcfromtimestamp(D["t_end"]).strftime('%Y-%m-%d %H:%M:%SZ'),
+                    D["t_start"], 
+                    D["t_end"],
+                    f"{start_lat:.6f}" if start_lat is not None else "",
+                    f"{start_lon:.6f}" if start_lon is not None else "",
+                    f"{end_lat:.6f}" if end_lat is not None else "",
+                    f"{end_lon:.6f}" if end_lon is not None else ""
+                ])
+
+        logger.info(f"Saved {n_anomalies} abnormal tracks to: {abnormal_csv_filename}")
+        logger.info(f"Saved {n_normal} normal tracks to: {normal_csv_filename}")
+
+        # Save to pickle files as well (keeping original functionality)
         save_filename = (
             f"List_abnormal_tracks-{train_name_clean}-{train_name_clean}-"
             f"{config.latent_size}-missing_data-{config.missing_data}-step-{step}.pkl"
@@ -366,6 +450,11 @@ else:
         
         with open(save_pkl_filename, "wb") as f:
             pickle.dump(l_dict_anomaly, f)
+
+        # Also save normal tracks to pickle
+        normal_pkl_filename = save_pkl_filename.replace("abnormal", "normal")
+        with open(normal_pkl_filename, "wb") as f:
+            pickle.dump(l_dict_normal, f)
 
         # Plot
         if not os.path.exists(config.trainingset_path):
@@ -402,15 +491,3 @@ else:
             fig_w=FIG_W, fig_h=FIG_H
         )
         plt.close()
-
-        # Save abnormal tracks to CSV
-        with open(os.path.join(save_dir, save_filename.replace(".png", ".csv")), "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(["MMSI", "Time_start", "Time_end", "Timestamp_start", "Timestamp_end"])
-            for D in l_dict_anomaly:
-                writer.writerow([
-                    D["mmsi"],
-                    datetime.utcfromtimestamp(D["t_start"]).strftime('%Y-%m-%d %H:%M:%SZ'),
-                    datetime.utcfromtimestamp(D["t_end"]).strftime('%Y-%m-%d %H:%M:%SZ'),
-                    D["t_start"], D["t_end"]
-                ])
