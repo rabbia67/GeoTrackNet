@@ -44,6 +44,7 @@ import time
 from pyproj import Geod
 geod = Geod(ellps='WGS84')
 #import dataset
+import folium
 
 AVG_EARTH_RADIUS = 6378.137  # in km
 SPEED_MAX = 30 # knot
@@ -393,4 +394,144 @@ def plot_abnormal_tracks(Vs_background,l_dict_anomaly,
         v_lon = ((tmp[:,1]-onehot_lat_bins)/float(onehot_lon_bins))*lon_range + lon_min
         plt.plot(v_lon,v_lat,color=c,linewidth=1.2) 
     
-    plt.savefig(filepath,dpi = fig_dpi)  
+    plt.savefig(filepath,dpi = fig_dpi)
+
+
+###################################################################################################
+def save_interactive_map(l_dict_anomaly, l_dict_normal, save_path,
+                         lat_min, lat_max, lon_min, lon_max,
+                         onehot_lat_bins, onehot_lon_bins, max_normal_tracks=200):
+    """
+    Creates an interactive HTML map with abnormal (Red) and normal (Blue) tracks.
+    """
+    # Center map on ROI
+    center_lat = (lat_min + lat_max) / 2
+    center_lon = (lon_min + lon_max) / 2
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=8, tiles='OpenStreetMap')
+
+    def decode_seq(seq):
+        # Convert bin indices back to lat/lon
+        lats = (seq[:, 0] * 0.01) + lat_min
+        lons = ((seq[:, 1] - onehot_lat_bins) * 0.01) + lon_min
+        return list(zip(lats, lons))
+
+    # Plot Normal Tracks (Limit number to prevent browser lag)
+    print(f"Plotting {min(len(l_dict_normal), max_normal_tracks)} normal tracks...")
+    for i, D in enumerate(l_dict_normal):
+        if i >= max_normal_tracks: break
+        points = decode_seq(D["seq"])
+        folium.PolyLine(points, color='blue', weight=1, opacity=0.3).add_to(m)
+
+    # Plot Abnormal Tracks (Plot ALL of them)
+    print(f"Plotting {len(l_dict_anomaly)} abnormal tracks...")
+    for D in l_dict_anomaly:
+        points = decode_seq(D["seq"])
+        folium.PolyLine(
+            points,
+            color='red',
+            weight=3,
+            opacity=0.8,
+            popup=f"MMSI: {D['mmsi']}<br>Start: {D['t_start']}"
+        ).add_to(m)
+
+    m.save(save_path)
+    print(f"Interactive map saved to {save_path}")
+
+##################################################################################################
+##################################################################################################
+def plot_track_profile(D, save_path, onehot_lat_bins, onehot_lon_bins, onehot_sog_bins,
+                       lat_min, lat_max, lon_min, lon_max):
+    """
+    Plots the trajectory, Speed profile, and Log-Likelihood profile for a single track.
+    """
+    try:
+        seq = D["seq"]
+        log_weights = D["log_weights"]  # Shape: [Time, Samples]
+        anomaly_idx = D.get("anomaly_idx", np.zeros(len(seq)))
+
+        # Skip the first 12 timesteps (2*6) as they are used for context
+        seq_plot = seq[12:] if len(seq) > 12 else seq
+        log_weights_plot = log_weights[12:] if len(log_weights) > 12 else log_weights
+
+        # Decode latitude and longitude
+        lat_range = lat_max - lat_min
+        lon_range = lon_max - lon_min
+        lats = (seq_plot[:, 0] * 0.01) + lat_min
+        lons = ((seq_plot[:, 1] - onehot_lat_bins) * 0.01) + lon_min
+
+        # Decode Speed (SOG is the 3rd component, index 2)
+        sog_offset = onehot_lat_bins + onehot_lon_bins
+        sog_knots = (seq_plot[:, 2] - sog_offset)
+
+        # Decode Course (COG is the 4th component, index 3)
+        cog_offset = sog_offset + onehot_sog_bins
+        cog_deg = (seq_plot[:, 3] - cog_offset) * 5  # Assuming 5 degree resolution
+
+        # Calculate mean log-prob per timestep
+        if len(log_weights_plot.shape) > 1:
+            log_prob_t = np.mean(log_weights_plot, axis=1)
+        else:
+            log_prob_t = log_weights_plot
+
+        # Match lengths
+        min_len = min(len(sog_knots), len(log_prob_t), len(cog_deg))
+
+        fig, ax = plt.subplots(4, 1, figsize=(12, 14))
+
+        # 1. Trajectory Map
+        ax[0].plot(lons[:min_len], lats[:min_len], 'b-', linewidth=2, alpha=0.6)
+        ax[0].scatter(lons[0], lats[0], c='green', s=100, marker='o', label='Start', zorder=5)
+        ax[0].scatter(lons[min_len - 1], lats[min_len - 1], c='red', s=100, marker='s', label='End', zorder=5)
+
+        # Highlight anomaly segments
+        if len(anomaly_idx) > 0 and np.any(anomaly_idx[:min_len] == 1):
+            anomaly_points = anomaly_idx[:min_len] == 1
+            ax[0].scatter(lons[:min_len][anomaly_points], lats[:min_len][anomaly_points],
+                          c='red', s=50, alpha=0.8, marker='x', label='Anomaly')
+
+        ax[0].set_xlabel("Longitude")
+        ax[0].set_ylabel("Latitude")
+        ax[0].set_title(f"Track Trajectory - MMSI: {D['mmsi']}")
+        ax[0].legend()
+        ax[0].grid(True, alpha=0.3)
+
+        # 2. Anomaly Score (Log Prob)
+        ax[1].plot(log_prob_t[:min_len], 'k-', linewidth=1.5, label='Log Likelihood')
+
+        # Highlight detected anomaly segments
+        if len(anomaly_idx) > 0 and np.any(anomaly_idx[:min_len] == 1):
+            y_min, y_max = ax[1].get_ylim()
+            ax[1].fill_between(range(min_len), y_min, y_max,
+                               where=anomaly_idx[:min_len] == 1,
+                               color='red', alpha=0.3, label='Detected Anomaly')
+
+        ax[1].set_ylabel("Log Likelihood")
+        ax[1].set_title("Anomaly Detection Score")
+        ax[1].legend()
+        ax[1].grid(True, alpha=0.3)
+
+        # 3. Speed Profile
+        ax[2].plot(sog_knots[:min_len], 'b-', linewidth=1.5)
+        ax[2].set_ylabel("Speed (Knots)")
+        ax[2].set_title("Speed over Ground (SOG)")
+        ax[2].grid(True, alpha=0.3)
+
+        # 4. Course Profile
+        ax[3].plot(cog_deg[:min_len], 'g-', linewidth=1.5)
+        ax[3].set_ylabel("Course (Degrees)")
+        ax[3].set_xlabel("Time Steps (10 mins)")
+        ax[3].set_title("Course over Ground (COG)")
+        ax[3].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        return True
+
+    except Exception as e:
+        print(f"Error plotting track profile: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        plt.close('all')
+        return False

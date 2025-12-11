@@ -1,4 +1,6 @@
+Here is the updated `README.md` with the **Calculate AIS Mean** step added. I have placed it as **Step 3** under the **Data Preparation** section, as this is the logical step after creating trajectories and immediately before starting the training process.
 
+-----
 
 # GeoTrackNet
 
@@ -54,7 +56,7 @@ It is critical to use a dedicated environment due to specific legacy dependency 
 
 -----
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 GeoTrackNet/
@@ -77,7 +79,7 @@ GeoTrackNet/
 
 -----
 
-## 📊 Data Preparation
+## Data Preparation
 
 This project utilizes two primary datasets. You must preprocess them before training.
 
@@ -89,17 +91,27 @@ This project utilizes two primary datasets. You must preprocess them before trai
 ### 2\. Preprocessing Steps
 
 1.  **Convert to CSV:**
+
       * *MarineC:* Use [QGIS](https://qgis.org/en/site/) to convert metadata to CSV.
       * *Brittany:* Use [libais](https://github.com/schwehr/libais) to parse raw messages.
+
 2.  **Create Trajectories:**
     Run `csv2pkl.py` to load CSV data, filter by Region of Interest (ROI), and save trajectories keyed by MMSI into `.pkl` format.
+
     ```bash
     python data/csv2pkl.py [arguments]
     ```
 
+3.  **Calculate AIS Mean:**
+    **Crucial:** Before training the model, you must calculate the mean of the AIS "four-hot" vectors. This script is located in the data directory.
+
+    ```bash
+    python data/calculate_AIS_mean.py
+    ```
+
 -----
 
-## 🚀 Usage
+## Usage
 
 The analysis pipeline is sequential. You must train the model before running detection.
 
@@ -134,6 +146,18 @@ python geotracknet.py \
   --dataset_dir=./data \
   --trainingset_name=ct_2017010203_10_20/ct_2017010203_10_20_train.pkl \
   --testset_name=ct_2017010203_10_20/ct_2017010203_10_20_valid.pkl \
+  --lat_min=47.5 --lat_max=49.5 \
+  --lon_min=-7.0 --lon_max=-4.0 \
+  --latent_size=100 \
+  --batch_size=32
+
+```
+```bash
+python geotracknet.py \
+  --mode=save_logprob \
+  --dataset_dir=./data \
+  --trainingset_name=ct_2017010203_10_20/ct_2017010203_10_20_train.pkl \
+  --testset_name=ct_2017010203_10_20/ct_2017010203_10_20_test.pkl \
   --lat_min=47.5 --lat_max=49.5 \
   --lon_min=-7.0 --lon_max=-4.0 \
   --latent_size=100 \

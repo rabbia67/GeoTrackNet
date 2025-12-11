@@ -51,6 +51,7 @@ import utils
 import contrario_utils
 import runners
 from flags_config import config
+import seaborn as sns
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +69,21 @@ LOGPROB_STD_MAX = 5
 
 ## RUN TRAIN
 #======================================
+def plot_score_distribution(l_dict, save_path):
+    scores = []
+    for D in l_dict:
+        # Calculate average log-likelihood for the track
+        scores.append(np.mean(D["log_weights"]))
+
+    plt.figure(figsize=(10, 6), dpi=FIG_DPI)
+    sns.histplot(scores, kde=True, bins=50, color='blue', label='All Tracks')
+    plt.title("Distribution of Track Log-Likelihoods")
+    plt.xlabel("Log-Likelihood (Lower is more anomalous)")
+    plt.ylabel("Count")
+    plt.legend()
+    plt.savefig(save_path)
+    plt.close()
+
 
 if config.mode == "train":
     if not os.path.exists(config.trainingset_path):
@@ -155,7 +171,8 @@ if config.mode in ["save_logprob", "traj_reconstruction"]:
                                 "t_start": t_start[d_idx_inbatch],
                                 "t_end": t_end[d_idx_inbatch],
                                 "mmsi": mmsi[d_idx_inbatch],
-                                "log_weights": log_weights_np[:seq_len_d, :, d_idx_inbatch]
+                                # CORRECT (Slice the Batch dimension, keep all Samples)
+                                "log_weights": log_weights_np[:seq_len_d, d_idx_inbatch]
                             }
                             l_dict.append(D)
                     except Exception as e:
@@ -193,6 +210,11 @@ if config.mode in ["save_logprob", "traj_reconstruction"]:
                 )
                 plt.savefig(fig_name, dpi=FIG_DPI)
                 plt.close()
+
+
+                # Call it
+                dist_plot_path = os.path.join(save_dir, f"score_distribution_step-{step}.png")
+                plot_score_distribution(l_dict, dist_plot_path)
 
 # The following variables are now defined globally, after the step is determined.
 # This logic is necessary for all non-training modes that require these paths.
@@ -438,6 +460,46 @@ else:
 
         logger.info(f"Saved {n_anomalies} abnormal tracks to: {abnormal_csv_filename}")
         logger.info(f"Saved {n_normal} normal tracks to: {normal_csv_filename}")
+
+        interactive_map_name = os.path.join(save_dir, f"interactive_map_step-{step}.html")
+        utils.save_interactive_map(
+            l_dict_anomaly,
+            l_dict_normal,
+            interactive_map_name,
+            config.lat_min, config.lat_max, config.lon_min, config.lon_max,
+            config.onehot_lat_bins, config.onehot_lon_bins
+        )
+
+        # Create a subfolder for profiles
+        profile_dir = os.path.join(save_dir, "track_profiles")
+        os.makedirs(profile_dir, exist_ok=True)
+
+        # Plot top 10 anomalies (or just the first 10 found)
+        num_profiles_to_plot = min(10, len(l_dict_anomaly))
+        logger.info(f"Plotting {num_profiles_to_plot} track profiles...")
+
+        profiles_created = 0
+        for i, D in enumerate(l_dict_anomaly[:num_profiles_to_plot]):
+            try:
+                profile_name = os.path.join(profile_dir, f"profile_mmsi_{D['mmsi']}_{i}.png")
+                success = utils.plot_track_profile(
+                    D,
+                    profile_name,
+                    config.onehot_lat_bins,
+                    config.onehot_lon_bins,
+                    config.onehot_sog_bins,
+                    config.lat_min,
+                    config.lat_max,
+                    config.lon_min,
+                    config.lon_max
+                )
+                if success:
+                    profiles_created += 1
+            except Exception as e:
+                logger.error(f"Failed to create profile for track {i} (MMSI: {D.get('mmsi', 'unknown')}): {str(e)}")
+                continue
+
+        logger.info(f"Successfully saved {profiles_created}/{num_profiles_to_plot} track profiles to {profile_dir}")
 
         # Save to pickle files as well (keeping original functionality)
         save_filename = (
